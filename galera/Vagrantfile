@@ -1,0 +1,143 @@
+$prepare_galera_node = <<-SCRIPT
+sudo apt update &&
+sudo apt upgrade -y &&
+sudo apt-get install software-properties-common &&
+sudo apt-key adv --recv-keys --keyserver hkp://keyserver.ubuntu.com:80 0xF1656F24C74CD1D8 &&
+sudo add-apt-repository 'deb [arch=amd64,arm64,ppc64el] http://sfo1.mirrors.digitalocean.com/mariadb/repo/10.3/ubuntu bionic main' &&
+sudo apt update
+export DEBIAN_FRONTEND=noninteractive
+sudo debconf-set-selections <<< 'mariadb-server-10.3 mysql-server/root_password password rootpass'
+sudo debconf-set-selections <<< 'mariadb-server-10.3 mysql-server/root_password_again password rootpass'
+sudo apt-get install -y mariadb-common mariadb-backup	 mariadb-server mariadb-client galera
+SCRIPT
+
+$setup_galera_1 = <<-SCRIPT
+sudo systemctl stop mariadb &&
+
+cat << EOF > /etc/mysql/conf.d/galera.cnf
+[mysqld]
+binlog_format=ROW
+default-storage-engine=innodb
+innodb_autoinc_lock_mode=2
+bind-address=0.0.0.0
+
+# Galera Provider Configuration
+wsrep_on=ON
+wsrep_provider=/usr/lib/galera/libgalera_smm.so
+
+# Galera Cluster Configuration
+wsrep_cluster_name="galera_cluster"
+wsrep_cluster_address="gcomm://192.168.56.11,192.168.56.12"
+
+# Galera Synchronization Configuration
+wsrep_sst_method=mysqldump
+
+# Galera Node Configuration
+wsrep_node_address="192.168.56.11"
+wsrep_node_name="master1"
+EOF
+
+galera_new_cluster
+systemctl start mariadb
+SCRIPT
+
+$setup_galera_2 = <<-SCRIPT
+sudo systemctl stop mariadb &&
+
+cat << EOF > /etc/mysql/conf.d/galera.cnf
+[mysqld]
+binlog_format=ROW
+default-storage-engine=innodb
+innodb_autoinc_lock_mode=2
+bind-address=0.0.0.0
+
+# Galera Provider Configuration
+wsrep_on=ON
+wsrep_provider=/usr/lib/galera/libgalera_smm.so
+
+# Galera Cluster Configuration
+wsrep_cluster_name="galera_cluster"
+wsrep_cluster_address="gcomm://192.168.56.11,192.168.56.12"
+
+# Galera Synchronization Configuration
+wsrep_sst_method=mysqldump
+
+# Galera Node Configuration
+wsrep_node_address="192.168.56.12"
+wsrep_node_name="master2"
+EOF
+
+systemctl start mariadb
+SCRIPT
+
+$init_galera_db_1 = <<-SCRIPT
+mysql -u root -prootpass -e "CREATE DATABASE galera_db_1"
+mysql -u root -prootpass galera_db_1 -e "CREATE TABLE galera_table_1 (name TEXT, age INT)"
+SCRIPT
+
+$init_standalone_db_1 = <<-SCRIPT
+mysql -u root -prootpass -e "CREATE DATABASE standalone_db_1"
+mysql -u root -prootpass standalone_db_1 -e "CREATE TABLE data (id INTEGER NOT NULL AUTO_INCREMENT, value CHAR(30), count INTEGER, PRIMARY KEY (value), KEY (id))"
+SCRIPT
+
+
+Vagrant.configure("2") do |config|
+  
+  config.vm.define "master-1" do |master1|
+    master1.vm.box = "ubuntu/bionic64"
+    master1.vm.hostname = "vagrant-galera-master1"
+    master1.disksize.size = "20GB"
+    master1.vm.network "private_network", ip: "192.168.56.11", name: "vboxnet0"
+    master1.vm.provision "shell", inline: $prepare_galera_node
+    master1.vm.provision "shell", inline: $setup_galera_1
+    master1.vm.provision "shell", inline: $init_galera_db_1
+    master1.vm.provider "virtualbox" do |v|
+      v.cpus = 2
+      v.memory = 2048
+      v.name = "vm-galera-master1"
+    end
+  end
+
+  config.vm.define "master-2" do |master2|
+    master2.vm.box = "ubuntu/bionic64"
+    master2.vm.hostname = "vagrant-galera-master2"
+    master2.disksize.size = "20GB"
+    master2.vm.network "private_network", ip: "192.168.56.12", name: "vboxnet0"
+    master2.vm.provision "shell", inline: $prepare_galera_node
+    master2.vm.provision "shell", inline: $setup_galera_2
+    master2.vm.provider "virtualbox" do |v|
+      v.cpus = 2
+      v.memory = 2048
+      v.name = "vm-galera-master2"
+    end
+  end
+
+  config.vm.define "master-3" do |master3|
+    master3.vm.box = "ubuntu/bionic64"
+    master3.vm.hostname = "vagrant-standalone-master"
+    master3.disksize.size = "20GB"
+    master3.vm.network "private_network", ip: "192.168.56.13", name: "vboxnet0"
+    master3.vm.provision "shell", inline: $prepare_galera_node
+    master3.vm.provision "shell", inline: $init_standalone_db_1
+    master3.vm.provider "virtualbox" do |v|
+      v.cpus = 2
+      v.memory = 2048
+      v.name = "vm-standalone-master"
+      end
+    end
+
+  config.vm.define "monitoring" do |monitoring|
+    monitoring.vm.box = "ubuntu/bionic64"
+    monitoring.vm.hostname = "vagrant-monitoring"
+    monitoring.disksize.size = "20GB"
+    monitoring.vm.network "private_network", ip: "192.168.56.20", name: "vboxnet0"
+    monitoring.vm.provision "shell", inline: $clustercontroll_install
+    monitoring.vm.provision "shell", inline: $proxysql_install
+    monitoring.vm.provider "virtualbox" do |v|
+      v.cpus = 2
+      v.memory = 2048
+      v.name = "vm-monitoring"
+      end
+    end
+end
+
